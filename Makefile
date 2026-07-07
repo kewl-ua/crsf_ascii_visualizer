@@ -12,19 +12,22 @@ UDP_HOST    ?= 0.0.0.0
 UDP_PORT    ?= 5555
 SERIAL_DEV  ?= /dev/ttyUSB0
 BAUD        ?= 420000
+UNIX_SOCK   ?= /tmp/crsf.sock
 
-.PHONY: help venv deps run run-udp run-serial run-stdin test lint clean distclean
+.PHONY: help venv deps run run-udp run-serial run-stdin run-unix-dgram run-unix-stream test lint clean distclean
 
 help:
 	@echo "Targets:"
-	@echo "  make deps        — создать venv и поставить зависимости (pyserial, pytest, pyflakes)"
-	@echo "  make run-udp     — запуск, слушает UDP  (UDP_HOST=$(UDP_HOST) UDP_PORT=$(UDP_PORT))"
-	@echo "  make run-serial  — запуск с UART напрямую (SERIAL_DEV=$(SERIAL_DEV) BAUD=$(BAUD))"
-	@echo "  make run-stdin   — запуск в режиме --stdin (для tee-пайплайна на клиенте)"
-	@echo "  make test        — прогнать pytest (tests/)"
-	@echo "  make lint        — py_compile + pyflakes"
-	@echo "  make clean       — удалить __pycache__/*.pyc"
-	@echo "  make distclean   — clean + удалить venv"
+	@echo "  make deps            — создать venv и поставить зависимости (pyserial, pytest, pyflakes)"
+	@echo "  make run-udp         — запуск, слушает UDP  (UDP_HOST=$(UDP_HOST) UDP_PORT=$(UDP_PORT))"
+	@echo "  make run-serial      — запуск с UART напрямую (SERIAL_DEV=$(SERIAL_DEV) BAUD=$(BAUD))"
+	@echo "  make run-stdin       — запуск в режиме --stdin (для tee-пайплайна на клиенте)"
+	@echo "  make run-unix-dgram  — бинд UNIX datagram-сокета (UNIX_SOCK=$(UNIX_SOCK))"
+	@echo "  make run-unix-stream — клиент к существующему UNIX stream-сокету (UNIX_SOCK=$(UNIX_SOCK))"
+	@echo "  make test            — прогнать pytest (tests/)"
+	@echo "  make lint            — py_compile + pyflakes"
+	@echo "  make clean           — удалить __pycache__/*.pyc"
+	@echo "  make distclean       — clean + удалить venv"
 
 # --- окружение -------------------------------------------------------------
 
@@ -51,6 +54,12 @@ run-stdin: venv
 	@echo "Пример клиентского пайплайна:"
 	@echo "  cat $(SERIAL_DEV) | tee >($(PY) $(SCRIPT) --stdin) | main_consumer"
 	$(PY) $(SCRIPT) --stdin
+
+run-unix-dgram: venv
+	$(PY) $(SCRIPT) --unix-dgram $(UNIX_SOCK)
+
+run-unix-stream: venv
+	$(PY) $(SCRIPT) --unix-stream $(UNIX_SOCK)
 
 # --- тесты / качество кода --------------------------------------------
 

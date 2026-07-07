@@ -5,6 +5,8 @@ crsf_stick_viz.py — CLI (curses/ASCII) визуализатор стиков �
 
 Источники данных:
   --stdin                    читать сырые CRSF-байты из stdin (для tee-пайплайна на клиенте)
+  --unix-dgram PATH          забиндить UNIX datagram-сокет (замена UDP для local IPC)
+  --unix-stream PATH         подключиться клиентом к существующему UNIX stream-сокету
   --udp HOST:PORT     слушать сырые CRSF-фреймы по UDP (по умолчанию 0.0.0.0:5555)
   --serial DEV --baud BAUD   читать напрямую с UART (нужен pyserial)
 
@@ -15,6 +17,13 @@ crsf_stick_viz.py — CLI (curses/ASCII) визуализатор стиков �
 
   python3 crsf_stick_viz.py --udp 0.0.0.0:5555
   python3 crsf_stick_viz.py --serial /dev/ttyUSB0 --baud 420000
+
+  # UNIX datagram — форвардер шлёт sendto() прямо в файл сокета вместо UDP:
+  python3 crsf_stick_viz.py --unix-dgram /tmp/crsf.sock
+
+  # UNIX stream — сокет уже поднят через socat с fork (несколько читателей):
+  socat UNIX-LISTEN:/tmp/crsf.sock,fork,reuseaddr /dev/ttyUSB0,raw,b420000 &
+  python3 crsf_stick_viz.py --unix-stream /tmp/crsf.sock
 
 В режиме --stdin клавиатура и экран curses открываются напрямую через /dev/tty,
 чтобы не конфликтовать с CRSF-потоком на fd0. Ctrl+C или 'q' — выход.
@@ -174,6 +183,79 @@ class UdpSource:
             except BlockingIOError:
                 break
         return b"".join(chunks)
+
+    def close(self):
+        self.sock.close()
+
+
+class UnixDgramSource:
+    """UNIX datagram-сокет — сохраняет границы сообщений как UDP, но без
+    накладных расходов сетевого стека (loopback всё равно проходит через
+    TCP/IP-путь ядра, AF_UNIX — нет). Подходит, если форвардер просто меняет
+    sendto(('127.0.0.1', 5555)) на sendto('/tmp/crsf.sock')."""
+
+    def __init__(self, path):
+        self.path = path
+        # убираем протухший файл сокета от прошлого запуска (bind падает,
+        # если файл уже существует)
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.sock.setblocking(False)
+        self.sock.bind(path)
+        try:
+            os.chmod(path, 0o666)  # чтобы форвардер с другим uid мог писать
+        except OSError:
+            pass
+
+    def read(self, timeout=0.02):
+        r, _, _ = select.select([self.sock], [], [], timeout)
+        if not r:
+            return b""
+        # тот же drain-цикл, что и для UDP: вычитываем все накопившиеся
+        # datagram'ы за один read(), см. UdpSource
+        chunks = []
+        while True:
+            try:
+                data, _ = self.sock.recvfrom(4096)
+                chunks.append(data)
+            except BlockingIOError:
+                break
+        return b"".join(chunks)
+
+    def close(self):
+        self.sock.close()
+        try:
+            os.unlink(self.path)
+        except OSError:
+            pass
+
+
+class UnixStreamSource:
+    """Клиент подключается к уже поднятому UNIX stream-сокету, например:
+    socat UNIX-LISTEN:/tmp/crsf.sock,fork,reuseaddr /dev/ttyUSB0,raw,b420000
+
+    С такой связкой к одному сокету можно подключить несколько независимых
+    читателей (fork на каждое подключение) — аналог tee, но через сокет."""
+
+    def __init__(self, path):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.connect(path)  # для локального сокета connect() мгновенный
+        self.sock.setblocking(False)
+
+    def read(self, timeout=0.02):
+        r, _, _ = select.select([self.sock], [], [], timeout)
+        if not r:
+            return b""
+        try:
+            data = self.sock.recv(4096)
+        except BlockingIOError:
+            return b""
+        if not data:
+            raise EOFError("unix stream socket closed by peer")
+        return data
 
     def close(self):
         self.sock.close()
@@ -417,6 +499,11 @@ def parse_args():
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--stdin", action="store_true",
                      help="читать сырые CRSF-байты из stdin (клиентский tee-пайплайн)")
+    ap.add_argument("--unix-dgram", metavar="PATH", default=None,
+                     help="забиндить UNIX datagram-сокет по PATH (замена UDP для local IPC)")
+    ap.add_argument("--unix-stream", metavar="PATH", default=None,
+                     help="подключиться клиентом к существующему UNIX stream-сокету по PATH "
+                          "(например, socat UNIX-LISTEN:PATH,fork)")
     ap.add_argument("--udp", metavar="HOST:PORT", default="0.0.0.0:5555",
                      help="слушать UDP с сырыми CRSF-фреймами (по умолчанию 0.0.0.0:5555)")
     ap.add_argument("--serial", metavar="DEV", default=None,
@@ -425,16 +512,29 @@ def parse_args():
     return ap.parse_args()
 
 
+def _make_source(args):
+    if args.stdin:
+        return StdinSource()
+    if args.unix_dgram:
+        return UnixDgramSource(args.unix_dgram)
+    if args.unix_stream:
+        try:
+            return UnixStreamSource(args.unix_stream)
+        except FileNotFoundError:
+            sys.exit(f"error: сокет '{args.unix_stream}' не существует "
+                     f"(сервер/socat ещё не запущен?)")
+        except ConnectionRefusedError:
+            sys.exit(f"error: '{args.unix_stream}' существует, но никто не слушает "
+                     f"(stale socket file? удали и перезапусти сервер)")
+    if args.serial:
+        return SerialSource(args.serial, args.baud)
+    host, port = args.udp.split(":")
+    return UdpSource(host, int(port))
+
+
 if __name__ == "__main__":
     args = parse_args()
-
-    if args.stdin:
-        source = StdinSource()
-    elif args.serial:
-        source = SerialSource(args.serial, args.baud)
-    else:
-        host, port = args.udp.split(":")
-        source = UdpSource(host, int(port))
+    source = _make_source(args)
 
     try:
         if args.stdin:

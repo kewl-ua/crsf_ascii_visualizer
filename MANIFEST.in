@@ -1,0 +1,9 @@
+include Makefile
+include main.py
+include man/crsf-viz.1
+recursive-include crsf_ascii_visualizer *.py
+recursive-include tests *.py
+recursive-include scripts *.py
+recursive-include docs *.md *.gif
+global-exclude __pycache__
+global-exclude *.py[cod]

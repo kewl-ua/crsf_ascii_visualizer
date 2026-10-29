@@ -1,0 +1,203 @@
+.TH CRSF-VIZ 1 "2026-10-29" "crsf-viz 0.1.0" "User Commands"
+.SH NAME
+crsf\-viz \- visualize CRSF RC channels in a terminal
+.SH SYNOPSIS
+.B crsf\-viz
+.RB [ \-\-udp
+.IR HOST:PORT
+.RB | \-\-serial
+.IR DEV
+.RB | \-\-unix\-dgram
+.IR PATH
+.RB | \-\-unix\-stream
+.IR PATH
+.RB | \-\-stdin ]
+.RB [ \-\-baud
+.IR BAUD ]
+.br
+.B crsf\-viz
+.RB [ \-h | \-\-help | \-\-version ]
+.SH DESCRIPTION
+.B crsf\-viz
+displays live CRSF radio-control channels as two stick boxes, numeric
+pulse widths, and twelve AUX bars with LOW, MID, or HIGH switch positions.
+It runs in a Linux terminal and reads raw CRSF bytes from one selected source.
+With no source option, it listens for UDP on
+.BR 0.0.0.0:5555 .
+.PP
+Only valid
+.B RC_CHANNELS_PACKED
+frames (type
+.BR 0x16 )
+update the display. CRC8 DVB-S2 is checked before the sixteen packed channels
+are decoded. Other CRSF frame types are ignored.
+.PP
+The display uses the Mode 2 mapping:
+.RS
+.nf
+CH1         Roll       Right stick, horizontal
+CH2         Pitch      Right stick, vertical
+CH3         Throttle   Left stick, vertical
+CH4         Yaw        Left stick, horizontal
+CH5-CH16    AUX1-AUX12 Channel bar and switch position
+.fi
+.RE
+.PP
+The status line shows the number of accepted RC frames, their incoming rate
+as
+.BR fps ,
+and the link state. The screen refresh is limited to 30 Hz;
+.B fps
+is the packet rate rather than the screen refresh rate.
+After 0.5 seconds without a valid RC frame, the link state becomes
+.BR "NO SIGNAL" .
+The last channel values remain visible until new frames arrive.
+.PP
+A terminal at least 80 columns wide and 33 rows high shows the full interface.
+Smaller terminals show a resize prompt while input processing continues.
+.SH OPTIONS
+The source options are mutually exclusive.
+.TP
+.BI \-\-udp " HOST:PORT"
+Bind a UDP socket to the specified local address and port. The default is
+.BR 0.0.0.0:5555 ,
+which listens on all local IPv4 interfaces. Use
+.B 127.0.0.1:5555
+to accept only local traffic. The host must be nonempty and the port must
+be in the range 1 through 65535. The sender must supply raw CRSF bytes,
+not JSON or text.
+.TP
+.BI \-\-serial " DEV"
+Read CRSF bytes directly from a serial device, for example
+.BR /dev/ttyUSB0 .
+This mode requires the optional
+.B pyserial
+dependency and permission to open the device.
+.TP
+.BI \-\-baud " BAUD"
+Set the serial baud rate to a positive integer. The default is
+.BR 420000 .
+This option is used by
+.BR \-\-serial .
+.TP
+.BI \-\-unix\-dgram " PATH"
+Create and bind an AF_UNIX datagram socket at
+.IR PATH .
+A local forwarder sends raw CRSF datagrams to this path.
+The path must not already exist. The socket path is removed when the
+application closes normally. Remove a confirmed stale socket yourself
+or choose another path before restarting.
+.TP
+.BI \-\-unix\-stream " PATH"
+Connect as a client to an existing AF_UNIX stream server at
+.IR PATH .
+The server must already be listening and must send raw CRSF bytes.
+The visualizer does not create or remove this server's socket path.
+.TP
+.B \-\-stdin
+Read raw CRSF bytes from standard input. A controlling terminal is required:
+keyboard input and curses output use
+.B /dev/tty
+so they do not consume or overwrite the incoming byte stream.
+This mode can be used in a Bash
+.BR tee (1)
+pipeline.
+.TP
+.BR \-h , " \-\-help"
+Show command-line help and exit.
+.TP
+.B \-\-version
+Show the program name and version, then exit.
+.SH KEYS
+.TP
+.BR q , " Q", " Esc"
+Quit normally.
+.TP
+.B Ctrl+C
+Interrupt the program and restore the terminal.
+.SH EXAMPLES
+Inspect CRSF sent to a local UDP port:
+.PP
+.RS
+.nf
+crsf-viz --udp 127.0.0.1:5555
+.fi
+.RE
+.PP
+Read a receiver through a USB-UART adapter:
+.PP
+.RS
+.nf
+crsf-viz --serial /dev/ttyUSB0 --baud 420000
+.fi
+.RE
+.PP
+Listen for a local datagram forwarder:
+.PP
+.RS
+.nf
+crsf-viz --unix-dgram /tmp/crsf.sock
+.fi
+.RE
+.PP
+Attach to an already running UNIX stream server:
+.PP
+.RS
+.nf
+crsf-viz --unix-stream /tmp/crsf.sock
+.fi
+.RE
+.PP
+Read a file containing raw CRSF frames while using the controlling terminal
+for the interface:
+.PP
+.RS
+.nf
+cat frames.crsf | crsf-viz --stdin
+.fi
+.RE
+.PP
+Observe a copy of a byte stream in Bash:
+.PP
+.RS
+.nf
+producer | tee >(crsf-viz --stdin) | main_consumer
+.fi
+.RE
+.SH ENVIRONMENT
+.TP
+.B TERM
+Terminal type used by curses. It must identify a terminal with a matching
+terminfo entry.
+.SH EXIT STATUS
+.TP
+.B 0
+Normal quit or end of input.
+.TP
+.B 1
+Operational error, such as an unavailable socket, serial device, terminal,
+or optional dependency.
+.TP
+.B 2
+Invalid command-line arguments.
+.TP
+.B 130
+Interrupted with Ctrl+C.
+.SH FILES
+.TP
+.B /dev/tty
+Controlling terminal used by
+.BR \-\-stdin .
+.TP
+.B /dev/ttyUSB0
+Example Linux USB serial device; specify the actual device with
+.BR \-\-serial .
+.SH SEE ALSO
+.BR bash (1),
+.BR python3 (1),
+.BR socat (1),
+.BR tee (1)
+.PP
+Project and issue tracker:
+.UR https://github.com/kewl-ua/crsf_ascii_visualizer
+.UE

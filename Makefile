@@ -7,7 +7,7 @@ PYFLAKES    := $(VENV)/bin/pyflakes
 
 SCRIPT      := main.py
 
-# Параметры запуска (переопределяются: make run-udp UDP_PORT=6000)
+# Run settings (override with: make run-udp UDP_PORT=6000)
 UDP_HOST    ?= 0.0.0.0
 UDP_PORT    ?= 5555
 SERIAL_DEV  ?= /dev/ttyUSB0
@@ -18,18 +18,18 @@ UNIX_SOCK   ?= /tmp/crsf.sock
 
 help:
 	@echo "Targets:"
-	@echo "  make deps            — создать venv и поставить зависимости (pyserial, pytest, pyflakes)"
-	@echo "  make run-udp         — запуск, слушает UDP  (UDP_HOST=$(UDP_HOST) UDP_PORT=$(UDP_PORT))"
-	@echo "  make run-serial      — запуск с UART напрямую (SERIAL_DEV=$(SERIAL_DEV) BAUD=$(BAUD))"
-	@echo "  make run-stdin       — запуск в режиме --stdin (для tee-пайплайна на клиенте)"
-	@echo "  make run-unix-dgram  — бинд UNIX datagram-сокета (UNIX_SOCK=$(UNIX_SOCK))"
-	@echo "  make run-unix-stream — клиент к существующему UNIX stream-сокету (UNIX_SOCK=$(UNIX_SOCK))"
-	@echo "  make test            — прогнать pytest (tests/)"
-	@echo "  make lint            — py_compile + pyflakes"
-	@echo "  make clean           — удалить __pycache__/*.pyc"
-	@echo "  make distclean       — clean + удалить venv"
+	@echo "  make deps            - create a venv and install pyserial, pytest and pyflakes"
+	@echo "  make run-udp         - listen for UDP frames (UDP_HOST=$(UDP_HOST) UDP_PORT=$(UDP_PORT))"
+	@echo "  make run-serial      - read UART directly (SERIAL_DEV=$(SERIAL_DEV) BAUD=$(BAUD))"
+	@echo "  make run-stdin       - read stdin for a client-side tee pipeline"
+	@echo "  make run-unix-dgram  - bind a UNIX datagram socket (UNIX_SOCK=$(UNIX_SOCK))"
+	@echo "  make run-unix-stream - connect to an existing UNIX stream socket (UNIX_SOCK=$(UNIX_SOCK))"
+	@echo "  make test            - run pytest (tests/)"
+	@echo "  make lint            - run py_compile and pyflakes"
+	@echo "  make clean           - remove __pycache__ directories and .pyc files"
+	@echo "  make distclean       - clean and remove the venv"
 
-# --- окружение -------------------------------------------------------------
+# --- environment -----------------------------------------------------------
 
 venv: $(VENV)/bin/activate
 
@@ -40,7 +40,7 @@ $(VENV)/bin/activate:
 deps: venv
 	$(PIP) install pyserial pytest pyflakes
 
-# --- запуск ------------------------------------------------------------
+# --- run -------------------------------------------------------------------
 
 run: run-udp
 
@@ -51,7 +51,7 @@ run-serial: venv
 	$(PY) $(SCRIPT) --serial $(SERIAL_DEV) --baud $(BAUD)
 
 run-stdin: venv
-	@echo "Пример клиентского пайплайна:"
+	@echo "Example client pipeline:"
 	@echo "  cat $(SERIAL_DEV) | tee >($(PY) $(SCRIPT) --stdin) | main_consumer"
 	$(PY) $(SCRIPT) --stdin
 
@@ -61,7 +61,7 @@ run-unix-dgram: venv
 run-unix-stream: venv
 	$(PY) $(SCRIPT) --unix-stream $(UNIX_SOCK)
 
-# --- тесты / качество кода --------------------------------------------
+# --- tests / code quality --------------------------------------------------
 
 test: deps
 	$(PYTEST) -q tests/
@@ -70,7 +70,7 @@ lint: deps
 	$(PY) -m py_compile $(SCRIPT)
 	-$(PYFLAKES) $(SCRIPT) tests/
 
-# --- уборка --------------------------------------------------------------
+# --- cleanup ---------------------------------------------------------------
 
 clean:
 	find . -name '__pycache__' -type d -prune -exec rm -rf {} +

@@ -1,32 +1,32 @@
 #!/usr/bin/env python3
 """
-crsf_stick_viz.py — CLI (curses/ASCII) визуализатор стиков и AUX-каналов
-по CRSF-пакетам (RC_CHANNELS_PACKED, frame type 0x16).
+main.py - CLI (curses/ASCII) stick and AUX channel visualizer
+for CRSF packets (RC_CHANNELS_PACKED, frame type 0x16).
 
-Источники данных:
-  --stdin                    читать сырые CRSF-байты из stdin (для tee-пайплайна на клиенте)
-  --unix-dgram PATH          забиндить UNIX datagram-сокет (замена UDP для local IPC)
-  --unix-stream PATH         подключиться клиентом к существующему UNIX stream-сокету
-  --udp HOST:PORT     слушать сырые CRSF-фреймы по UDP (по умолчанию 0.0.0.0:5555)
-  --serial DEV --baud BAUD   читать напрямую с UART (нужен pyserial)
+Data sources:
+  --stdin                   read raw CRSF bytes from stdin (client-side tee pipeline)
+  --unix-dgram PATH         bind a UNIX datagram socket (local IPC instead of UDP)
+  --unix-stream PATH        connect to an existing UNIX stream socket as a client
+  --udp HOST:PORT           listen for raw CRSF frames over UDP (default: 0.0.0.0:5555)
+  --serial DEV --baud BAUD  read directly from UART (requires pyserial)
 
-Пример (tee на клиенте, параллельно с основным потребителем потока):
-  cat /dev/ttyUSB0 | tee >(python3 crsf_stick_viz.py --stdin) | main_consumer
-  # либо, если поток уже идёт в UDP на другой процесс:
-  socat /dev/ttyUSB0,raw,b420000 - | tee >(python3 crsf_stick_viz.py --stdin) > /dev/udp/127.0.0.1/5555
+Example (client-side tee, alongside the main stream consumer):
+  cat /dev/ttyUSB0 | tee >(python3 main.py --stdin) | main_consumer
+  # Or, if the stream is already forwarded to another process over UDP:
+  socat /dev/ttyUSB0,raw,b420000 - | tee >(python3 main.py --stdin) > /dev/udp/127.0.0.1/5555
 
-  python3 crsf_stick_viz.py --udp 0.0.0.0:5555
-  python3 crsf_stick_viz.py --serial /dev/ttyUSB0 --baud 420000
+  python3 main.py --udp 0.0.0.0:5555
+  python3 main.py --serial /dev/ttyUSB0 --baud 420000
 
-  # UNIX datagram — форвардер шлёт sendto() прямо в файл сокета вместо UDP:
-  python3 crsf_stick_viz.py --unix-dgram /tmp/crsf.sock
+  # UNIX datagram: the forwarder sends directly to a socket path instead of UDP:
+  python3 main.py --unix-dgram /tmp/crsf.sock
 
-  # UNIX stream — сокет уже поднят через socat с fork (несколько читателей):
+  # UNIX stream: socat already serves the socket with fork for multiple readers:
   socat UNIX-LISTEN:/tmp/crsf.sock,fork,reuseaddr /dev/ttyUSB0,raw,b420000 &
-  python3 crsf_stick_viz.py --unix-stream /tmp/crsf.sock
+  python3 main.py --unix-stream /tmp/crsf.sock
 
-В режиме --stdin клавиатура и экран curses открываются напрямую через /dev/tty,
-чтобы не конфликтовать с CRSF-потоком на fd0. Ctrl+C или 'q' — выход.
+In --stdin mode, curses opens keyboard input and screen output through /dev/tty
+to avoid conflicting with the CRSF stream on fd0. Press Ctrl+C or 'q' to quit.
 """
 
 import argparse
@@ -69,7 +69,7 @@ def crc8_dvb_s2(data: bytes) -> int:
 
 
 def unpack_channels(payload: bytes):
-    """Распаковать 22 байта (16 каналов по 11 бит, little-endian bitstream)."""
+    """Unpack 22 bytes (16 channels of 11 bits each, little-endian bitstream)."""
     bits = 0
     bitcount = 0
     channels = []
@@ -84,12 +84,12 @@ def unpack_channels(payload: bytes):
 
 
 def crsf_to_us(raw: int) -> int:
-    """CRSF raw (172..1811, центр 992) -> микросекунды (988..2012, центр 1500)."""
+    """Convert CRSF raw values (172..1811, center 992) to microseconds (988..2012, center 1500)."""
     return int(round((raw - 992) * (1024.0 / 1639.0) + 1500))
 
 
 def us_to_norm(us: int, lo=988, hi=2012):
-    """Нормализация в диапазон -1.0..1.0"""
+    """Normalize to the range -1.0..1.0."""
     mid = (lo + hi) / 2.0
     span = (hi - lo) / 2.0
     return max(-1.0, min(1.0, (us - mid) / span))
@@ -107,9 +107,9 @@ class CrsfFrameParser:
         self.buf.extend(data)
 
     def pop_frames(self):
-        """Генератор: извлекает валидные (frametype, payload) фреймы из буфера."""
+        """Yield valid (frametype, payload) frames extracted from the buffer."""
         while True:
-            # найти байт синхронизации
+            # Find a sync byte.
             sync_pos = None
             for i, b in enumerate(self.buf):
                 if b in CRSF_SYNC_BYTES:
@@ -122,17 +122,17 @@ class CrsfFrameParser:
                 del self.buf[:sync_pos]
 
             if len(self.buf) < 3:
-                return  # ждём ещё данных
+                return  # Wait for more data.
 
-            length = self.buf[1]  # включает type + payload + crc
+            length = self.buf[1]  # Includes type + payload + CRC.
             if length < 2 or length > CRSF_MAX_FRAME_LEN:
-                # мусорный байт синхронизации, сдвигаемся дальше
+                # Invalid data after a sync byte; move on.
                 del self.buf[0:1]
                 continue
 
             full_len = 2 + length  # sync + len_byte + (type+payload+crc)
             if len(self.buf) < full_len:
-                return  # весь фрейм ещё не пришёл
+                return  # The complete frame has not arrived yet.
 
             frame = bytes(self.buf[:full_len])
             del self.buf[:full_len]
@@ -142,7 +142,7 @@ class CrsfFrameParser:
             crc_received = frame[-1]
             crc_calc = crc8_dvb_s2(payload_and_crc)
             if crc_calc != crc_received:
-                continue  # битый фрейм, пропускаем
+                continue  # Skip a corrupted frame.
 
             payload = frame[3:-1]
             yield frametype, payload
@@ -156,9 +156,9 @@ class UdpSource:
     def __init__(self, host, port):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setblocking(False)
-        # чуть увеличим приёмный буфер ОС — на случай кратковременных
-        # задержек в обработке при потоке 250 Hz (26 байт * 250 ≈ 6.5 KB/s,
-        # сам трафик копеечный, буфер нужен только как амортизатор джиттера)
+        # Increase the OS receive buffer to absorb brief processing delays
+        # at 250 Hz (26 bytes * 250 is about 6.5 KB/s). Traffic volume is low;
+        # the buffer only needs to absorb jitter.
         try:
             self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 16)
         except OSError:
@@ -169,12 +169,10 @@ class UdpSource:
         r, _, _ = select.select([self.sock], [], [], timeout)
         if not r:
             return b""
-        # ВАЖНО: recvfrom() отдаёт ровно один datagram за вызов. При 250 Hz
-        # (кадр каждые 4 мс) буфер сокета легко накапливает несколько
-        # фреймов, если между select()-ами прошло время дольше 4 мс
-        # (перерисовка, GC-пауза и т.п.) — поэтому вычитываем ВСЁ, что уже
-        # лежит в очереди, одним проходом, иначе визуализация будет
-        # показывать устаревшее положение стиков.
+        # recvfrom() returns exactly one datagram per call. At 250 Hz
+        # (one frame every 4 ms), redraws or GC pauses can leave several
+        # frames queued between select() calls. Drain the entire queue in
+        # one pass so the display shows the latest stick positions.
         chunks = []
         while True:
             try:
@@ -189,15 +187,17 @@ class UdpSource:
 
 
 class UnixDgramSource:
-    """UNIX datagram-сокет — сохраняет границы сообщений как UDP, но без
-    накладных расходов сетевого стека (loopback всё равно проходит через
-    TCP/IP-путь ядра, AF_UNIX — нет). Подходит, если форвардер просто меняет
-    sendto(('127.0.0.1', 5555)) на sendto('/tmp/crsf.sock')."""
+    """Preserve datagram boundaries without the network stack overhead.
+
+    Loopback UDP still uses the kernel's TCP/IP path; AF_UNIX does not.
+    A forwarder can replace sendto(('127.0.0.1', 5555)) with a sendto()
+    call targeting '/tmp/crsf.sock'.
+    """
 
     def __init__(self, path):
         self.path = path
-        # убираем протухший файл сокета от прошлого запуска (bind падает,
-        # если файл уже существует)
+        # Remove a stale socket file from a previous run; bind() fails
+        # if the file already exists.
         try:
             os.unlink(path)
         except FileNotFoundError:
@@ -206,7 +206,7 @@ class UnixDgramSource:
         self.sock.setblocking(False)
         self.sock.bind(path)
         try:
-            os.chmod(path, 0o666)  # чтобы форвардер с другим uid мог писать
+            os.chmod(path, 0o666)  # Allow a forwarder with another UID to write.
         except OSError:
             pass
 
@@ -214,8 +214,7 @@ class UnixDgramSource:
         r, _, _ = select.select([self.sock], [], [], timeout)
         if not r:
             return b""
-        # тот же drain-цикл, что и для UDP: вычитываем все накопившиеся
-        # datagram'ы за один read(), см. UdpSource
+        # Drain all queued datagrams in one read(), as in UdpSource.
         chunks = []
         while True:
             try:
@@ -234,15 +233,16 @@ class UnixDgramSource:
 
 
 class UnixStreamSource:
-    """Клиент подключается к уже поднятому UNIX stream-сокету, например:
+    """Connect as a client to an existing UNIX stream socket, for example:
     socat UNIX-LISTEN:/tmp/crsf.sock,fork,reuseaddr /dev/ttyUSB0,raw,b420000
 
-    С такой связкой к одному сокету можно подключить несколько независимых
-    читателей (fork на каждое подключение) — аналог tee, но через сокет."""
+    Forking for each connection lets several independent readers share
+    one socket, like tee over a socket.
+    """
 
     def __init__(self, path):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.connect(path)  # для локального сокета connect() мгновенный
+        self.sock.connect(path)  # Connecting to a local socket is immediate.
         self.sock.setblocking(False)
 
     def read(self, timeout=0.02):
@@ -262,8 +262,10 @@ class UnixStreamSource:
 
 
 class StdinSource:
-    """Читает сырые CRSF-байты из fd0 — типичный случай, когда клиент разводит
-    поток через `tee` (serial/socat -> tee -> [этот скрипт, основной потребитель])."""
+    """Read raw CRSF bytes from fd0, typically split by client-side tee.
+
+    Example: serial/socat -> tee -> [this script, main consumer].
+    """
 
     def __init__(self):
         self.fd = sys.stdin.fileno()
@@ -276,7 +278,7 @@ class StdinSource:
             except OSError:
                 return b""
             if not data:
-                # EOF: сторона, пишущая в tee, закрылась
+                # EOF: the upstream tee producer has closed.
                 raise EOFError("stdin closed (upstream tee/producer exited)")
             return data
         return b""
@@ -287,7 +289,7 @@ class StdinSource:
 
 class SerialSource:
     def __init__(self, dev, baud):
-        import serial  # pyserial, локальный импорт чтобы не требовать его для UDP-режима
+        import serial  # Import locally so UDP mode does not require pyserial.
         self.ser = serial.Serial(dev, baudrate=baud, timeout=0)
 
     def read(self, timeout=0.02):
@@ -305,18 +307,18 @@ class SerialSource:
 # ASCII rendering helpers
 # ---------------------------------------------------------------------------
 
-STICK_W = 21   # нечётное, чтобы был центр
+STICK_W = 21   # Odd width provides a center cell.
 STICK_H = 11
 
 def render_stick_box(win, y0, x0, xnorm, ynorm, label):
-    """Рисует рамку STICK_W x STICK_H с точкой стика внутри."""
-    # рамка
+    """Draw a STICK_W x STICK_H box with the stick position marked inside."""
+    # Border.
     win.addstr(y0, x0, "+" + "-" * (STICK_W - 2) + "+")
     for row in range(1, STICK_H - 1):
         win.addstr(y0 + row, x0, "|" + " " * (STICK_W - 2) + "|")
     win.addstr(y0 + STICK_H - 1, x0, "+" + "-" * (STICK_W - 2) + "+")
 
-    # центр-крест (пунктиром), чтобы видеть нейтраль
+    # Dashed center cross marks the neutral position.
     cx = x0 + STICK_W // 2
     cy = y0 + STICK_H // 2
     for row in range(1, STICK_H - 1):
@@ -330,7 +332,7 @@ def render_stick_box(win, y0, x0, xnorm, ynorm, label):
         except curses.error:
             pass
 
-    # позиция стика: xnorm/ynorm в [-1..1], ось Y инвертирована (вверх = положительно)
+    # Stick coordinates are in [-1..1]; invert Y so positive values point up.
     px = int(round((xnorm + 1) / 2 * (STICK_W - 3))) + x0 + 1
     py = int(round((1 - ynorm) / 2 * (STICK_H - 3))) + y0 + 1
     px = max(x0 + 1, min(x0 + STICK_W - 2, px))
@@ -344,14 +346,14 @@ def render_stick_box(win, y0, x0, xnorm, ynorm, label):
 
 
 def render_bar(win, y, x, width, norm01, label, value_str):
-    """norm01 in [0,1], горизонтальный бар."""
+    """Draw a horizontal bar with norm01 in [0,1]."""
     filled = int(round(norm01 * width))
     bar = "#" * filled + "-" * (width - filled)
     win.addstr(y, x, f"{label:>5} [{bar}] {value_str}")
 
 
 def render_switch(win, y, x, raw_us, label):
-    """Для AUX каналов отображаем и бар, и грубую позицию переключателя (1/2/3)."""
+    """Show an AUX channel bar and its approximate switch position (1/2/3)."""
     n = us_to_norm(raw_us)
     if n < -0.35:
         pos = "LOW "
@@ -380,16 +382,15 @@ def main(stdscr, source, args):
     fps = 0.0
     fps_ts = time.time()
 
-    # Терминалу не нужно обновляться в такт CRSF-потоку (250 Hz) — глаз
-    # не различает разницу выше ~30 Hz, а erase()+addstr() на каждой
-    # итерации лишь жгут CPU. Разбор фреймов идёт на полной скорости,
-    # редрисовка — троттлится отдельным таймером.
+    # The terminal does not need to refresh at the CRSF input rate (250 Hz).
+    # Redrawing with erase()+addstr() on every iteration wastes CPU.
+    # Parse frames at full speed and throttle redraws with a separate timer.
     RENDER_HZ = 30.0
     RENDER_INTERVAL = 1.0 / RENDER_HZ
     last_render = 0.0
 
     while True:
-        # выход по 'q'
+        # Quit on 'q'.
         try:
             key = stdscr.getch()
             if key in (ord('q'), ord('Q'), 27):
@@ -418,7 +419,7 @@ def main(stdscr, source, args):
             fps_ts = now
 
         if now - last_render < RENDER_INTERVAL:
-            continue  # ещё рано перерисовывать — экономим CPU
+            continue  # Save CPU until the next redraw is due.
         last_render = now
 
         stdscr.erase()
@@ -434,7 +435,7 @@ def main(stdscr, source, args):
 
         us = [crsf_to_us(c) for c in channels]
 
-        # Mode 2: CH1=Roll, CH2=Pitch, CH3=Throttle, CH4=Yaw (стандартная CRSF раскладка)
+        # Mode 2: CH1=Roll, CH2=Pitch, CH3=Throttle, CH4=Yaw (standard CRSF mapping).
         roll_n = us_to_norm(us[0])
         pitch_n = us_to_norm(us[1])
         throttle_n = us_to_norm(us[2])
@@ -447,13 +448,13 @@ def main(stdscr, source, args):
         render_stick_box(stdscr, y0, left_x, yaw_n, throttle_n, "THR / YAW (L)")
         render_stick_box(stdscr, y0, right_x, roll_n, pitch_n, "ROLL / PITCH (R)")
 
-        # числовые значения основных каналов
+        # Numeric values of the primary channels.
         info_y = y0 + STICK_H + 2
         stdscr.addstr(info_y, left_x,
                       f"CH1 Roll:{us[0]:5d}us  CH2 Pitch:{us[1]:5d}us  "
                       f"CH3 Thr:{us[2]:5d}us  CH4 Yaw:{us[3]:5d}us")
 
-        # AUX каналы CH5..CH16
+        # AUX channels CH5..CH16.
         aux_y = info_y + 2
         stdscr.addstr(aux_y, left_x, "AUX channels:", curses.A_UNDERLINE)
         for i in range(4, NUM_CHANNELS):
@@ -462,7 +463,7 @@ def main(stdscr, source, args):
                 break
             render_switch(stdscr, row, left_x, us[i], f"AUX{i-3}")
 
-        footer = "q — выход"
+        footer = "q - quit"
         if h > 0:
             stdscr.addstr(min(h - 1, aux_y + 1 + (NUM_CHANNELS - 4) + 1), left_x, footer, curses.A_DIM)
 
@@ -470,8 +471,7 @@ def main(stdscr, source, args):
 
 
 def run_with_tty(source, args):
-    """Запуск curses с явным /dev/tty для ввода/вывода, оставляя fd0 (stdin)
-    свободным под CRSF-байты, приходящие через tee."""
+    """Run curses through /dev/tty, leaving fd0 free for CRSF bytes from tee."""
     tty = open("/dev/tty", "r+b", buffering=0)
     term_type = os.environ.get("TERM", "xterm")
     screen = curses.newterm(term_type, tty.fileno(), tty.fileno())
@@ -498,17 +498,17 @@ def parse_args():
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--stdin", action="store_true",
-                     help="читать сырые CRSF-байты из stdin (клиентский tee-пайплайн)")
+                     help="read raw CRSF bytes from stdin (client-side tee pipeline)")
     ap.add_argument("--unix-dgram", metavar="PATH", default=None,
-                     help="забиндить UNIX datagram-сокет по PATH (замена UDP для local IPC)")
+                     help="bind a UNIX datagram socket at PATH (local IPC instead of UDP)")
     ap.add_argument("--unix-stream", metavar="PATH", default=None,
-                     help="подключиться клиентом к существующему UNIX stream-сокету по PATH "
-                          "(например, socat UNIX-LISTEN:PATH,fork)")
+                     help="connect as a client to an existing UNIX stream socket at PATH "
+                          "(for example, socat UNIX-LISTEN:PATH,fork)")
     ap.add_argument("--udp", metavar="HOST:PORT", default="0.0.0.0:5555",
-                     help="слушать UDP с сырыми CRSF-фреймами (по умолчанию 0.0.0.0:5555)")
+                     help="listen for raw CRSF frames over UDP (default: 0.0.0.0:5555)")
     ap.add_argument("--serial", metavar="DEV", default=None,
-                     help="читать напрямую с UART, например /dev/ttyUSB0 (требует pyserial)")
-    ap.add_argument("--baud", type=int, default=420000, help="скорость UART (по умолчанию 420000)")
+                     help="read directly from UART, for example /dev/ttyUSB0 (requires pyserial)")
+    ap.add_argument("--baud", type=int, default=420000, help="UART baud rate (default: 420000)")
     return ap.parse_args()
 
 
@@ -521,11 +521,11 @@ def _make_source(args):
         try:
             return UnixStreamSource(args.unix_stream)
         except FileNotFoundError:
-            sys.exit(f"error: сокет '{args.unix_stream}' не существует "
-                     f"(сервер/socat ещё не запущен?)")
+            sys.exit(f"error: socket '{args.unix_stream}' does not exist "
+                     f"(is the server/socat running?)")
         except ConnectionRefusedError:
-            sys.exit(f"error: '{args.unix_stream}' существует, но никто не слушает "
-                     f"(stale socket file? удали и перезапусти сервер)")
+            sys.exit(f"error: '{args.unix_stream}' exists, but no server is listening "
+                     f"(stale socket file? remove it and restart the server)")
     if args.serial:
         return SerialSource(args.serial, args.baud)
     host, port = args.udp.split(":")

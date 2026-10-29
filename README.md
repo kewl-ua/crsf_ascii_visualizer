@@ -12,6 +12,8 @@ python3 main.py --udp 0.0.0.0:5555
 
 ## Read CRSF over UART
 
+![CRSF over USB-UART: serial input, decoding and terminal output](docs/assets/crsf-signal-path.gif)
+
 ```bash
 python3 -m pip install pyserial
 python3 main.py --serial /dev/ttyUSB0 --baud 420000
